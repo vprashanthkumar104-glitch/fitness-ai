@@ -1,0 +1,175 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default-deny catch-all safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper Functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // User Profile Validation
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['userId', 'email', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['userId', 'displayName', 'email', 'photoURL', 'fitnessGoal', 'fitnessLevel', 'streakDays', 'completedWorkouts', 'createdAt', 'updatedAt']) &&
+             data.userId == request.auth.uid &&
+             data.userId == userId &&
+             data.email is string && data.email.size() > 0 && data.email.size() <= 150 &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 100)) &&
+             (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500)) &&
+             (!('fitnessGoal' in data) || (data.fitnessGoal is string && data.fitnessGoal.size() <= 50)) &&
+             (!('fitnessLevel' in data) || (data.fitnessLevel is string && data.fitnessLevel.size() <= 50)) &&
+             (!('streakDays' in data) || data.streakDays is number) &&
+             (!('completedWorkouts' in data) || data.completedWorkouts is number);
+    }
+
+    // User Saved Plan Validation
+    function isValidSavedPlan(data, userId) {
+      return data.keys().hasAll(['id', 'userId', 'title', 'content', 'createdAt']) &&
+             data.keys().hasOnly(['id', 'userId', 'featureId', 'title', 'category', 'content', 'createdAt']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 128 &&
+             data.userId == request.auth.uid &&
+             data.userId == userId &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 128 &&
+             data.content is string && data.content.size() > 0 && data.content.size() <= 5000 &&
+             (!('featureId' in data) || (data.featureId is string && data.featureId.size() <= 64)) &&
+             (!('category' in data) || (data.category is string && data.category.size() <= 64));
+    }
+
+    // Contact Message Validation
+    function isValidContactMessage(data) {
+      return data.keys().hasAll(['id', 'name', 'email', 'subject', 'message', 'createdAt', 'status']) &&
+             data.keys().hasOnly(['id', 'name', 'email', 'subject', 'message', 'createdAt', 'status']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 128 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.email is string && data.email.size() > 0 && data.email.size() <= 150 &&
+             data.subject is string && data.subject.size() > 0 && data.subject.size() <= 150 &&
+             data.message is string && data.message.size() > 0 && data.message.size() <= 2000 &&
+             data.status in ['unread', 'read', 'archived'];
+    }
+
+    // Knowledge Document Validation
+    function isValidKnowledgeDoc(data) {
+      return data.keys().hasAll(['id', 'name', 'fileType', 'fileSize', 'uploadedAt', 'status']) &&
+             data.keys().hasOnly(['id', 'userId', 'name', 'fileType', 'mimeType', 'fileSize', 'formattedSize', 'uploadedAt', 'status', 'contentPreview', 'charCount', 'wordCount']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 128 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 255 &&
+             data.fileType in ['pdf', 'doc', 'docx', 'txt'] &&
+             data.fileSize is number && data.fileSize >= 0 &&
+             data.status in ['ready', 'processing', 'indexed'] &&
+             (!('userId' in data) || (data.userId is string && data.userId.size() <= 128)) &&
+             (!('mimeType' in data) || (data.mimeType is string && data.mimeType.size() <= 128)) &&
+             (!('formattedSize' in data) || (data.formattedSize is string && data.formattedSize.size() <= 32)) &&
+             (!('contentPreview' in data) || (data.contentPreview is string && data.contentPreview.size() <= 2000)) &&
+             (!('charCount' in data) || data.charCount is number) &&
+             (!('wordCount' in data) || data.wordCount is number);
+    }
+
+    // User Collection Rules
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false; // PII protection: no collection enumeration
+
+      allow create: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt;
+
+      allow delete: if isOwner(userId);
+
+      // Subcollection: Saved Plans
+      match /saved_plans/{planId} {
+        allow get, list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(planId) &&
+                         isValidSavedPlan(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(planId) &&
+                         isValidSavedPlan(incoming(), userId) &&
+                         incoming().id == existing().id &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt;
+
+        allow delete: if isOwner(userId) && isValidId(planId);
+      }
+    }
+
+    // Contact Inbound Messages
+    match /contact_messages/{messageId} {
+      // Anyone can submit an inquiry via contact form
+      allow create: if isValidId(messageId) &&
+                       isValidContactMessage(incoming()) &&
+                       incoming().id == messageId;
+
+      // Restrict reading and modifying to prevent PII exposure
+      allow read, update, delete: if false;
+    }
+
+    // Knowledge Base Documents for RAG Pipeline
+    match /knowledge_documents/{docId} {
+      allow get, list: if true;
+
+      allow create: if isValidId(docId) &&
+                       isValidKnowledgeDoc(incoming()) &&
+                       incoming().id == docId;
+
+      allow update: if isValidId(docId) &&
+                       isValidKnowledgeDoc(incoming()) &&
+                       incoming().id == existing().id;
+
+      allow delete: if isValidId(docId);
+    }
+
+    // Knowledge Base Text Chunks for RAG Vector Pipeline
+    function isValidKnowledgeChunk(data) {
+      return data.keys().hasAll(['id', 'docId', 'docName', 'chunkIndex', 'text']) &&
+             data.keys().hasOnly(['id', 'docId', 'docName', 'chunkIndex', 'text', 'charCount', 'wordCount', 'createdAt']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 128 &&
+             data.docId is string && data.docId.size() > 0 && data.docId.size() <= 128 &&
+             data.docName is string && data.docName.size() > 0 && data.docName.size() <= 255 &&
+             data.chunkIndex is number && data.chunkIndex >= 0 &&
+             data.text is string && data.text.size() > 0 && data.text.size() <= 3000;
+    }
+
+    match /knowledge_chunks/{chunkId} {
+      allow get, list: if true;
+
+      allow create: if isValidId(chunkId) &&
+                       isValidKnowledgeChunk(incoming()) &&
+                       incoming().id == chunkId;
+
+      allow update: if isValidId(chunkId) &&
+                       isValidKnowledgeChunk(incoming()) &&
+                       incoming().id == existing().id;
+
+      allow delete: if isValidId(chunkId);
+    }
+  }
+}

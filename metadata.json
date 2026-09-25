@@ -1,0 +1,6 @@
+{
+  "name": "Fitness AI",
+  "description": "Your AI-powered fitness journey with personalized workout routines, nutrition plans, challenges, equipment reviews, and wellness guidance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
